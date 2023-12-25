@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import datetime
 import MetaTrader5 as mt5
-
-
+from enum import Enum
+import csv
 
 def get_data(currency):
     mt5.initialize()
@@ -114,7 +114,49 @@ def evaluate(ls,name):
     details=[totalprof,num_buy_trades,total_buy_profit,num_sell_trades,total_sell_profit,maxprof,index_of_maxprof,max_duration,id_max_duration,profitable_trades,losing_trades,total_profit,total_loss]
     return details
 
+def evaluate2(ls, name):
+    df = pd.DataFrame(ls, columns=['Tradetype', 'dateopened', 'dateclosed', 'profit'])
+    maxprof = df.profit.max()
+    index_of_maxprof = df['profit'].idxmax()
+    pips = maxprof * 100
+    totalprof = df.profit.sum()
 
+    df['dateopened'] = df['dateopened'].apply(lambda x: datetime.datetime.fromtimestamp(x))
+    df['dateclosed'] = df['dateclosed'].apply(lambda x: datetime.datetime.fromtimestamp(x))
+
+    # Calculate the duration of each trade
+    df['duration'] = df['dateclosed'] - df['dateopened']
+    max_duration = df['duration'].max()
+    id_max_duration = df['duration'].idxmax()
+    max_row = df[df['duration'] == max_duration]
+    longtype = max_row['Tradetype'].values[0]
+    num_buy_trades = df[df['Tradetype'] == 'Buy'].shape[0]
+
+    # Finding the total profit for 'Buy' trades
+    total_sell_profit = df[df['Tradetype'] == 'Sell']['profit'].sum()
+    num_sell_trades = df[df['Tradetype'] == 'Sell'].shape[0]
+
+    # Finding the total profit for 'Buy' trades
+    total_buy_profit = df[df['Tradetype'] == 'Buy']['profit'].sum()
+
+    max_profit = max_row['profit'].values[0]
+
+    profitable_trades = df[df['profit'] > 0].shape[0]
+    losing_trades = df[df['profit'] < 0].shape[0]
+    total_profit = df[df['profit'] > 0]['profit'].sum()
+    total_loss = df[df['profit'] < 0]['profit'].sum()
+
+    details = [totalprof, num_buy_trades, total_buy_profit, num_sell_trades, total_sell_profit, maxprof,
+               index_of_maxprof, max_duration, id_max_duration, profitable_trades, losing_trades, total_profit,
+               total_loss]
+
+    # Create a DataFrame with a single row using transposition
+    result_df = pd.DataFrame(details).T
+    result_df.columns = ['totalprof', 'num_buy_trades', 'total_buy_profit', 'num_sell_trades', 'total_sell_profit',
+                         'maxprof', 'index_of_maxprof', 'max_duration', 'id_max_duration', 'profitable_trades',
+                         'losing_trades', 'total_profit', 'total_loss']
+
+    return result_df
 
 def calc_prof(enter,close):
     prof=enter-close
@@ -421,3 +463,317 @@ def smastrategy2(data, window, o_sma_value, s_sma_value):
     processed_trades = [f'small{o_sma_value},large{s_sma_value}window{window}',processed_trades1, processed_trades2, processed_trades3]         
 
     return processed_trades
+
+def x_points2(data,index):
+    # index=index.tolist()[0]
+    val_h=data.iloc[index]
+    start_date = val_h['mtime'].date()
+    t=val_h['mtime'].time()
+    filtered_data = data[(data['mtime'].dt.date == start_date) & (data.index <= index)]
+    # print(filtered_data)
+    # print(f'filtered_data:\n{filtered_data.head()}')
+    max_value = filtered_data['Close'].max()
+    min_value = filtered_data['Close'].min()
+    return max_value, min_value
+    
+    
+class TradeStatus(Enum):
+    BUY = 1
+    SELL = -1
+    NONE = 0
+def distance_checker(price,value,lim):
+    plh=price-value
+    plh=abs(plh)
+    if plh >lim:
+        return 1
+    else:
+        return 0
+
+def find_status(data,index,window,size):
+    cspreads=[]
+    # print(index,window,size)
+    # print("fstatus here1")
+    for i in range(window):
+        datapoint=data.iloc[index-i]
+        close=datapoint['Close']
+        openv=datapoint['Open']
+        cspread=abs(close-openv)
+        cspreads.append(cspread)
+    # print("fstatus here2")
+    if max(cspreads)>size:
+        return 1
+    else:
+        return 0
+    
+    
+def daily3(data,  adjtime, lim, window, c_size, sl_adj, multiplier):
+    trades = []
+    trade = TradeStatus.NONE
+    opendate = None
+    openprice = 0
+    tp = 0
+    sl = 0
+
+    for i, val_h in data.iterrows():
+        time = val_h['mtime'].time()
+        adj_time = pd.to_datetime(adjtime).time()
+
+        if time < adj_time:
+            continue
+
+        tday = val_h['mtime'].date()
+        target_datetime = pd.to_datetime(f'{tday} {adjtime}')
+        val = data[data['mtime'] == target_datetime]
+        
+        startindex = val.index
+        ind = startindex.tolist()[0]
+        begin_max_value, begin_min_value = x_points2(data, ind)
+        maxv, minv = begin_max_value, begin_min_value
+
+        price = val_h['Close']
+        dist_check = distance_checker(price, maxv if trade == TradeStatus.SELL else minv, lim)
+
+        if trade == TradeStatus.NONE:
+            if dist_check == 1 and find_status(data, i, window, c_size) == 1:
+                if price > maxv:
+                    trade = TradeStatus.SELL
+                elif price < minv:
+                    trade = TradeStatus.BUY
+
+                openprice = price
+                opendate = val_h['time']
+                sl = (val_h['High'] if trade == TradeStatus.BUY else val_h['Low']) - sl_adj
+                expected_loss = abs(sl - price)
+                target_tp = expected_loss * multiplier
+                tp = price + target_tp if trade == TradeStatus.SELL else price - target_tp
+
+        elif trade in [TradeStatus.BUY, TradeStatus.SELL]:
+            if (price > tp and trade == TradeStatus.BUY) or (price < sl and trade == TradeStatus.SELL):
+                closedate = val_h['time']
+                profit = calc_prof(price, openprice) if trade == TradeStatus.BUY else calc_prof(openprice, price)
+                trades.append(('Buy' if trade == TradeStatus.BUY else 'Sell', opendate, closedate, profit))
+                trade = TradeStatus.NONE
+
+    return trades
+
+def daily4(data, adjtime, lim, window, c_size, sl_adj, multiplier):
+    trades = []
+    trade = TradeStatus.NONE
+    opendate = None
+    openprice = 0
+    tp = 0
+    sl = 0
+
+    adj_time = pd.to_datetime(adjtime).time()
+    data['mtime'] = pd.to_datetime(data['mtime'])
+    
+    mask = data['mtime'].dt.time >= adj_time
+    data = data[mask]
+
+    for i, val_h in data.iterrows():
+        tday = val_h['mtime'].date()
+        target_datetime = pd.to_datetime(f'{tday} {adjtime}')
+        val = data[data['mtime'] == target_datetime]
+        
+        startindex = val.index
+        ind = startindex.tolist()[0]
+        begin_max_value, begin_min_value = x_points2(data, ind)
+        maxv, minv = begin_max_value, begin_min_value
+
+        price = val_h['Close']
+        dist_check = distance_checker(price, maxv if trade == TradeStatus.SELL else minv, lim)
+
+        if trade == TradeStatus.NONE:
+            if dist_check == 1 and find_status(data, i, window, c_size) == 1:
+                if price > maxv:
+                    trade = TradeStatus.SELL
+                elif price < minv:
+                    trade = TradeStatus.BUY
+
+                openprice = price
+                opendate = val_h['time']
+                sl = (val_h['High'] if trade == TradeStatus.BUY else val_h['Low']) - sl_adj
+                expected_loss = abs(sl - price)
+                target_tp = expected_loss * multiplier
+                tp = price + target_tp if trade == TradeStatus.SELL else price - target_tp
+
+        elif trade in [TradeStatus.BUY, TradeStatus.SELL]:
+            if (price > tp and trade == TradeStatus.BUY) or (price < sl and trade == TradeStatus.SELL):
+                closedate = val_h['time']
+                profit = calc_prof(price, openprice) if trade == TradeStatus.BUY else calc_prof(openprice, price)
+                trades.append(('Buy' if trade == TradeStatus.BUY else 'Sell', opendate, closedate, profit))
+                trade = TradeStatus.NONE
+
+    return trades
+
+def daily_move(data,combinations,output_csv):
+    result_list=[]
+    for values in combinations:
+        adjtime, lim, window, c_size, sl_adj, multiplier = values
+        name=f'starttime:{adjtime,} window: {window}candlesize{c_size}sl_adj{sl_adj}multiplier{multiplier}'
+        result = daily3(data, adjtime, lim, window, c_size, sl_adj, multiplier)
+        evaluated_info=evaluate(result,name)
+        result_dict1 = {
+        'Strategy': name,
+        'Take_profit_level':"level1(tp1)",
+        'Max_Profit': evaluated_info[0],
+        'Num_Buy_Trades': evaluated_info[1],
+        'Total_Buy_Profit': evaluated_info[2],
+        'Num_Sell_Trades': evaluated_info[3],
+        'Total_Sell_Profit': evaluated_info[4],
+        'Max_Profit_Index': evaluated_info[5],
+        'Index_of_Max_Profit': evaluated_info[6],
+        'Max_Duration': evaluated_info[7],
+        'ID_Max_Duration': evaluated_info[8],
+        'total_profitable_trades':evaluated_info[9],
+        'total_unprofitable_trades':evaluated_info[10],
+        'total_profitable_trades':evaluated_info[11],
+        'total_loss_trades':evaluated_info[12]}
+
+        result_list.append(result_dict1)
+        
+    with open(output_csv, 'w', newline='') as csvfile:
+        fieldnames = result_list[0].keys()
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for row in result_list:
+            writer.writerow(row)
+def daily(data,adjtime,lim,window,c_size,sl_adj,multiplier):
+    trades=[]
+    trade=0
+    opendate=None
+    openprice=0
+    tp=0
+    sl=0
+    for i in range(len(data)):
+        val_h=data.loc[i]
+        time=val_h['mtime'].time()
+        adj_time = pd.to_datetime(adjtime).time()# adtime being such astring '03:00:00'
+        if time<adj_time:
+            continue
+        else:
+            
+            tday=val_h['mtime'].date()
+            target_datetime = pd.to_datetime(f'{tday} {adj_time}')
+            # print(target_datetime)
+            val=data[data['mtime'] == target_datetime]
+            # print(val)
+            # print(val.index)
+            
+            startindex=val.index
+            ind=startindex.tolist()[0]
+            begin_max_value,begin_min_value=x_points2(data,ind)
+            maxv=begin_max_value
+            # print(maxv)
+            minv=begin_min_value
+            # print(minv)
+            
+            # print(f'tade{trade}')
+            price=val_h['Close']
+            if trade==0:
+                if price>maxv:
+                    if distance_checker(price,maxv,lim)==0:
+                        maxv=price
+                        continue
+                    elif distance_checker(price,maxv,lim)==1:
+                        # print('i am here 4')
+                        if find_status(data,i,window,c_size)==1:
+                            # print('HEREEE')
+                            # print(ind)
+                            trade=-1
+                            openprice=price
+                            opendate=val_h['time']
+                            lowp=val_h['Low']
+                            # print('i am here ')
+                            sl=lowp-sl_adj
+                            expectedloss=price-sl
+                            target_tp=expectedloss*multiplier
+                            tp=price+target_tp
+                            # print(trade)
+
+                            
+                elif price<minv:
+                    if distance_checker(price,minv,lim)==0:
+                        minv=price
+                        continue
+                    elif distance_checker(price,minv,lim)==1:
+                        # print('i am here3 ')
+                        if find_status(data,i,window,c_size)==1:
+                            # print('found me 1')
+                            trade=1
+                            openprice=price
+                            # print(trade)
+                            opendate=val_h['time']
+                            # print('i am here2 ')
+                            highp=val_h['High']
+                            sl=highp-sl_adj
+                            expectedloss=sl-price
+                            target_tp=expectedloss*multiplier
+                            tp=price-target_tp
+            elif trade==1:
+                # print('i am here8 ')
+                if price>tp:
+                    # print('i am here 6')
+                    closedate=val_h['time'] 
+                    profit=calc_prof(price,openprice)
+                    trades.append(('Buy',opendate,closedate,profit))
+                    
+                    trade=0
+                elif price<sl:
+                    # print('i am here7 ')
+                    closedate=val_h['time']
+                    profit=calc_prof(price,openprice)
+                    trades.append(('Buy',opendate,closedate,profit))
+                    
+                    trade=0
+            elif trade==-1:
+                # print('i am here 9 ')
+                if price<tp:
+                    # print('i am here 10 ')
+                    closedate=val_h['time']
+                    profit=calc_prof(openprice,price)
+                    trades.append(('Sell',opendate,closedate,profit))
+                    
+                    trade=0
+                elif price>sl:
+                    # print('i am here 11 ')
+                    closedate=val_h['time']
+                    profit=calc_prof(openprice,price)
+                    trades.append(('Sell',opendate,closedate,profit))
+                    
+                    trade=0
+    return trades
+                    
+                           
+def daily_move2(data,adjtime, lim, window, c_size, sl_adj, multiplier ):
+    name=f'starttime:{adjtime,} window: {window}candlesize{c_size}sl_adj{sl_adj}multiplier{multiplier}'
+    result = daily(data, adjtime, lim, window, c_size, sl_adj, multiplier)
+    print('i am here')
+    evaluated_info=evaluate(result,name)
+    print('i am here2')
+    result_dict1 = {
+    'Strategy': name,
+    'Take_profit_level':"level1(tp1)",
+    'Max_Profit': evaluated_info[0],
+    'Num_Buy_Trades': evaluated_info[1],
+    'Total_Buy_Profit': evaluated_info[2],
+    'Num_Sell_Trades': evaluated_info[3],
+    'Total_Sell_Profit': evaluated_info[4],
+    'Max_Profit_Index': evaluated_info[5],
+    'Index_of_Max_Profit': evaluated_info[6],
+    'Max_Duration': evaluated_info[7],
+    'ID_Max_Duration': evaluated_info[8],
+    'total_profitable_trades':evaluated_info[9],
+    'total_unprofitable_trades':evaluated_info[10],
+    'total_profitable_trades':evaluated_info[11],
+    'total_loss_trades':evaluated_info[12]}
+
+    return result_dict1
+    # with open(name, 'w', newline='') as csvfile:
+    #     fieldnames = result_dict1.keys()
+    #     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+    #     writer.writeheader()
+    #     writer.writerow(result_dict1)
+            
