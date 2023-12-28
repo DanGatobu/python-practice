@@ -81,7 +81,7 @@ def evaluate(ls,name):
     index_of_maxprof = df['profit'].idxmax()
     pips=maxprof*100
     totalprof=df.profit.sum()
-    # print(f'The total profit for  {name} was :{totalprof}')
+    print(f'The total profit for  {name} was :{totalprof}')
     df['dateopened'] = df['dateopened'].apply(lambda x: datetime.datetime.fromtimestamp(x))
     df['dateclosed'] = df['dateclosed'].apply(lambda x: datetime.datetime.fromtimestamp(x))
 
@@ -101,11 +101,11 @@ def evaluate(ls,name):
     total_buy_profit = df[df['Tradetype'] == 'Buy']['profit'].sum()
 
     max_profit = max_row['profit'].values[0]
-    # print(f'the trade that took most time took {max_duration} and made {max_profit} type:{longtype}')
-    # print(f'Buy :{num_buy_trades} profit:{total_buy_profit}')
-    # print(f'Sell:{num_sell_trades} profit:{total_sell_profit}')
-    # print(f'the max duration was {max_duration}')
-    # print(f'The trade with the highest profit made {maxprof} pips:{pips} ')
+    print(f'the trade that took most time took {max_duration} and made {max_profit} type:{longtype}')
+    print(f'Buy :{num_buy_trades} profit:{total_buy_profit}')
+    print(f'Sell:{num_sell_trades} profit:{total_sell_profit}')
+    print(f'the max duration was {max_duration}')
+    print(f'The trade with the highest profit made {maxprof} pips:{pips} ')
     profitable_trades = df[df['profit'] > 0].shape[0]
     losing_trades = df[df['profit'] < 0].shape[0]
     total_profit = df[df['profit'] > 0]['profit'].sum()
